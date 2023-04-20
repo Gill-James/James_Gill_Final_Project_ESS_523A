@@ -1,0 +1,196 @@
+---
+title: "final project shiny"
+author: "James Gill"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Download data
+
+# Load libraries
+```{r}
+source("setup.R")
+library(tidyverse)
+library(palmerpenguins)
+library(sf)
+library(terra)
+library(tmap)
+library(mapview)
+library(rmarkdown)
+library(tigris)
+library(elevatr)
+library(rgdal)
+library(rgbif)
+library(soilDB)
+library(plotly)
+
+```
+
+# Set tmap to view
+```{r}
+tmap_mode("view")
+```
+
+# Download CO county data
+```{r}
+counties <- tigris::counties(state = "CO")
+```
+
+# Landcover data
+```{r}
+#read in landcover data
+landcover <- terra::rast("data/NLCD_CO.tif")
+
+#create landcover data for CO counties
+landcover_prj <- terra::project(landcover, crs(counties))
+st_crs(landcover_prj)==st_crs(counties)
+
+#create new landcover CO counties data
+counties_co<-counties
+counties_co$common_landcover <- terra::extract(landcover_prj, counties, fun = modal, ties="first")[,2]
+
+#add landcover categories
+landcover_cats <- as.data.frame(cats(landcover))
+  
+#clean data and create nlcd_classes
+nlcd_classes <- landcover_cats%>%
+  select(value, NLCD.Land.Cover.Class)%>%
+  filter(NLCD.Land.Cover.Class!="")
+
+#join landcover data and remove na values (SAVE THIS)
+nlcd_classes <- nlcd_classes%>%
+  rename(landcover_value = value)
+
+counties_co <- counties_co%>%
+  rename(landcover_value = common_landcover)
+
+co_nlcd_counties <- left_join(nlcd_classes, counties_co, by = "landcover_value")
+
+co_nlcd_counties<-co_nlcd_counties%>%
+  filter(INTPTLON != "NA")
+```
+
+# Create species vectors
+```{r}
+#scientific names
+species <- c("Bromus tectorum L.", "Tamarix chinensis", "Linaria vulgaris")
+
+#common names
+common_name <- c("Cheatgrass", "Chinese Saltcedar", "Yellow Toadflax")
+```
+
+
+# Download Occurance data
+```{r map challenge}
+#create function
+output_map <- map2(species,common_name, function(species = species, common_name=common_name) { occ_map <- occ_data(
+      scientificName = species,
+      hasCoordinate = TRUE, #we only want data with spatial coordinates
+      geometry = st_bbox(counties), #filter to the state of CO
+      limit = 2000 #optional set an upper limit for total occurrences to download
+    ) %>%
+    .$data #return just the data frame. The '.' symbolizes the previous function's output. 
+  print(occ_data)
+  # add species name column as ID to use later
+  occ_map$ID <- common_name
+  
+  #convert list to data frame
+  
+  occ_map <- as.data.frame(occ_map)
+  
+  #clean by removing duplicate occurrences
+  occ_map <-
+    occ_map %>% distinct(decimalLatitude, decimalLongitude, .keep_all = TRUE) %>%
+    dplyr::select(Species = ID,
+                  decimalLatitude,
+                  decimalLongitude,
+                  year,
+                  month,
+                  basisOfRecord)
+})
+
+bound_output_map <- bind_rows(output_map)
+```
+
+# Create SF objects
+```{r}
+#create sf objects
+co_nlcd_counties$geometry_wkt <- st_as_text(co_nlcd_counties$geometry)
+
+co_nlcd_counties_sf <- st_as_sf(co_nlcd_counties, wkt = "geometry_wkt", crs = 4326)
+
+occ_sf <- st_as_sf(bound_output_map, coords = c("decimalLongitude","decimalLatitude"), crs = 4326)
+
+#add county/occurrence intersections
+co_nlcd_counties_sf$occurrence_count <- lengths(st_intersects(co_nlcd_counties_sf, occ_sf))
+
+#add landcover/occurance
+combined_sf <- st_join(occ_sf, co_nlcd_counties_sf, join = st_intersects)%>%
+  select(combined_sfSpecies, NLCD.)
+
+# map 
+tmap_mode("plot")
+  
+map <- tm_shape(co_nlcd_counties_sf) +
+  tm_polygons(col = "NLCD.Land.Cover.Class",
+              palette = "viridis",
+              style = "quantile", n = 6,
+              title = "Land Cover Type") +
+tm_shape(occ_sf) +
+  tm_facets(by = "Species", free.coords = FALSE) +
+  tm_symbols(col = "Species", palette = c("black", "darkgreen", "gold"),
+             alpha = 0.5) +
+  tm_layout(legend.show = FALSE)
+```
+
+#Create separate occurance data sets
+```{r}
+#create cheatgrass data
+cheatgrass_occ <- occ_sf%>%
+  filter(occ_sf$Species == "Cheatgrass")
+
+co_nlcd_counties_sf$cheatgrass_count <- lengths(st_intersects(co_nlcd_counties_sf, cheatgrass_occ))
+
+#create toadflax data 
+toadflax_occ <- occ_sf%>%
+  filter(occ_sf$Species == "Yellow Toadflax")
+
+co_nlcd_counties_sf$toadflax_count <- lengths(st_intersects(co_nlcd_counties_sf, toadflax_occ))
+
+#create saltcedar data 
+saltcedar_occ <- occ_sf%>%
+  filter(occ_sf$Species == "Chinese Saltcedar")
+
+co_nlcd_counties_sf$saltcedar_count <- lengths(st_intersects(co_nlcd_counties_sf, saltcedar_occ))
+
+#create species by landcover
+counties_lc_occ <- st_drop_geometry(co_nlcd_counties_sf)
+
+species_by_cover <- counties_lc_occ%>%
+  select(NLCD.Land.Cover.Class, cheatgrass_count, toadflax_count, saltcedar_count, occurrence_count)%>%
+  group_by(NLCD.Land.Cover.Class)%>%
+  summarize(cheatgrass_total = sum(cheatgrass_count),
+            toadflax_total = sum(toadflax_count),
+            saltcedar_total = sum(saltcedar_count),
+            occurance_total = sum(occurrence_count))
+
+#plot
+lc_species_chart <- plot_ly(species_by_cover, x = ~NLCD.Land.Cover.Class) %>%
+  add_trace(y = ~cheatgrass_total, name = "Cheatgrass", type = "bar") %>%
+  add_trace(y = ~toadflax_total, name = "Toadflax", type = "bar") %>%
+  add_trace(y = ~saltcedar_total, name = "Saltcedar", type = "bar") %>%
+  layout(title = "Colorado Invasive Plant Observations by Land Cover",
+         xaxis = list(title = "Land Cover Type"),
+         yaxis = list(title = "Total Occurrences"))
+  
+```
+
+
+```{r}
+save(species_by_cover, lc_species_chart, occ_sf, co_nlcd_counties_sf, map, combined_sf, file = "C:/Users/jrgil/OneDrive/Documents/James_Gill_Final_Project_ESS_523A/James_Gill_Final_Project/finalprojdata2.RData")
+```
+

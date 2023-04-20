@@ -1,0 +1,14 @@
+name: James_Gill_Final_Project
+title: James_Gill_Final_Project
+username:
+account: gill-james
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 8911025
+bundleId: 7115751
+url: https://gill-james.shinyapps.io/James_Gill_Final_Project/
+when: 1682024679.07234
+lastSyncTime: 1682024679.07237
+asMultiple: FALSE
+asStatic: FALSE
+ignoredFiles: finalprojdata.RData
